@@ -28,13 +28,14 @@ def login_required(f):
         session.permanent = True
         if "loggedin" not in session:
             print("Please log in to access this page.")
-            return redirect(url_for("main.index"))
+            return redirect(url_for("index"))
         return f(*args, **kwargs)
 
     return decorated_function
 
 
 app = Flask(__name__)
+app.secret_key = "AlterUSE"
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -61,7 +62,7 @@ def index():
                         "date": account["user_joining_date"],
                     }
                 )
-                return redirect(url_for("main.dashboard"))
+                return redirect(url_for("dashboard"))
             else:
                 print("Incorrect username/password!")
 
@@ -107,7 +108,7 @@ def signup():
             if "conn" in locals():
                 conn.close()
 
-        return redirect(url_for("main.index"))
+        return redirect(url_for("index"))
 
     return render_template("signup.html")
 
@@ -116,7 +117,7 @@ def signup():
 def logout():
     session.clear()
     print("You have been logged out.")
-    return redirect(url_for("main.index"))
+    return redirect(url_for("index"))
 
 
 @app.route("/logout_inactivity", methods=["POST"])
@@ -159,26 +160,24 @@ def dashboard():
         cursor.execute(
             """
                 SELECT 
-                    SUM(bottles), 
-                    SUM(cans), 
-                    SUM(cups) 
+                    COALESCE(SUM(bottles), 0) AS total_bottles,
+                    COALESCE(SUM(cans), 0)    AS total_cans,
+                    COALESCE(SUM(cups), 0)    AS total_cups
                 FROM user_history
                 WHERE user_id = %s
             """,
             (user_id,),
         )
-        summary = cursor.fetchone()
+        summary = cursor.fetchone() or {}
 
-        if summary:
-            total_bottles, total_cans, total_cups = summary.values()
-        else:
-            total_bottles = total_cans = total_cups = 0
-
+        total_bottles = summary.get("total_bottles", 0)
+        total_cans = summary.get("total_cans", 0)
+        total_cups = summary.get("total_cups", 0)
     except Exception as e:
         print(f"Error: {e}")
         submissions = []
         location = ""
-
+        total_bottles = total_cans = total_cups = 0
     finally:
         if "conn" in locals():
             conn.close()
@@ -207,53 +206,50 @@ def dashboard():
 @app.route("/submit", methods=["POST", "GET"])
 @login_required
 def submit():
-    if request.method == "POST":
-        branch = request.form["branch"]
-        bottle_quantity = request.form.get("bottle-quantity", 0, type=int)
-        can_quantity = request.form.get("can-quantity", 0, type=int)
-        cup_quantity = request.form.get("cup-quantity", 0, type=int)
+    if request.method == "GET":
+        return redirect(url_for("dashboard"))
 
-        user_id = session.get("id")
-        if not user_id:
-            print("Please log in to submit an order.")
-            return redirect(url_for("main.index"))
+    branch = request.form["branch"]
+    bottle_quantity = request.form.get("bottle-quantity", 0, type=int)
+    can_quantity = request.form.get("can-quantity", 0, type=int)
+    cup_quantity = request.form.get("cup-quantity", 0, type=int)
+
+    user_id = session.get("id")
+    if not user_id:
+        print("Please log in to submit an order.")
+        return redirect(url_for("index"))
 
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-
         cursor.execute(
             """
                 INSERT INTO user_history (user_id, bottles, cans, cups, user_history_date, user_history_branch) 
                 VALUES (%s, %s, %s, %s, NOW(), %s)
-                """,
+            """,
             (user_id, bottle_quantity, can_quantity, cup_quantity, branch),
         )
 
-        bottle_points = bottle_quantity * 2  # 2 points per bottle
-        can_points = can_quantity * 3  # 3 points per can
-        cup_points = cup_quantity * 1  # 1 point per cup
+        bottle_points = bottle_quantity * 2
+        can_points = can_quantity * 3
+        cup_points = cup_quantity * 1
         total_points = bottle_points + can_points + cup_points
 
         cursor.execute(
             "UPDATE user SET user_points = user_points + %s WHERE user_id = %s",
             (total_points, user_id),
         )
-
         session["points"] = session.get("points", 0) + total_points
-
         conn.commit()
         print("Submission successful!")
-
     except Exception as e:
         print(f"Error: {e}")
         print("An error occurred during submission.")
-
     finally:
         if "conn" in locals():
             conn.close()
 
-    return redirect(url_for("main.dashboard"))
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/update_profile", methods=["POST"])
@@ -261,7 +257,7 @@ def submit():
 def update_profile():
     data = request.get_json()
     name = data.get("name")
-    password = data.get("password")
+    password = (data.get("password") or "").strip()
     location = data.get("location")
     user_id = session.get("id")
 
@@ -281,7 +277,6 @@ def update_profile():
         session["password"] = password
 
         return jsonify({"success": True})
-
     except Exception as e:
         print(f"Error updating profile: {e}")
         return jsonify({"success": False, "message": "Database error occurred"})
